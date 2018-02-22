@@ -1,19 +1,24 @@
 require 'spec_helper'
-require 'permissable'
+require 'boy_band'
 require 'active_support'
+require 'fakeredis'
+require 'rails'
 
-describe Permissable do
-  module Permissions
+describe BoyBand do
+  module Async
     extend ActiveSupport::Concern
-    include Permissable::InstanceMethods
+    include BoyBand::AsyncInstanceMethods
     
     module ClassMethods
-      include Permissable::ClassMethods
+      include BoyBand::AsyncClassMethods
     end
   end
+  module Worker
+    extend BoyBand::WorkerMethods
+  end
   
-  class PermitObject
-    include Permissions
+  class AsyncObject
+    include Async
     def id
       12345
     end
@@ -21,239 +26,244 @@ describe Permissable do
     def updated_at
       Time.parse("Jun 1, 2016")
     end
+    
+    def reload
+      self
+    end
+    
+    def self.count
+      1
+    end
+    
+    def self.find_by(*args)
+      opts = JSON.parse(args[0].to_json)
+      if opts['id'].to_s != '12345'
+        return nil
+      end
+      AsyncObject.new
+    end
   end
   
-  class PermitObject2
-    include Permissions
+  class AsyncObject2 < AsyncObject
+  end
+  
+  class FakeLogger
+    def warn(*args)
+    end
+    
+    def info(*args)
+    end
   end
   
   before(:each) do
-    PermitObject.permissions_lookup = []
-    PermitObject2.permissions_lookup = []
-    PermitObject.allow_cached_permissions = false
-  end
-  
-  it "should have not error on init" do
-    expect(PermitObject.new).to_not eq(nil)
+    Worker.flush_queues
+    Resque.redis = Redis.new
+    @logger = FakeLogger.new
+    allow(Rails).to receive(:logger).and_return(@logger)
   end
 
-  describe "FakeRedis" do
-    it "should have default redis behavior" do
-      expect(Permissable.permissions_redis).to_not eq(nil)
-      expect(Permissable.permissions_redis.get('asdf')).to eq(nil)
-      expect(Permissable.permissions_redis.setex('asdf')).to eq(false)
-      expect(Permissable.permissions_redis.del('asdf')).to eq(false)
-      expect(Permissable.cache_token).to eq('permissable_redis_cache_token')
-    end
-  end
-  
-  it "should return a default cache key" do
-    expect(PermitObject.new.cache_key).to eq('PermitObject12345-1464760800.0:permissable_redis_cache_token')
-    expect(PermitObject.new.cache_key('bacon')).to eq('bacon/PermitObject12345-1464760800.0:permissable_redis_cache_token')
-  end
-  
-  describe "set_cached" do
-    it "should set the right expiration, prefix, and json value" do
-      data = {a: 1, b: 2}
-      expect(Permissable.permissions_redis).to receive(:setex).with('bacon/PermitObject12345-1464760800.0:permissable_redis_cache_token', 1800, data.to_json).and_return(true)
-      PermitObject.new.set_cached('bacon', data)
-    end
+  describe "async" do
+    describe "object scheduling" do
+      it "should not error on empty values" do
+        u = AsyncObject.new
+        expect(u.schedule(nil)).to eq(nil)
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => nil, 'arguments' => []})).to be_falsey
+      end
     
-    it "should use the specified expiration if defined" do
-      data = {a: 1, b: 2}
-      expect(Permissable.permissions_redis).to receive(:setex).with('bacon/PermitObject12345-1464760800.0:permissable_redis_cache_token', 12345, data.to_json).and_return(true)
-      PermitObject.new.set_cached('bacon', data, 12345)
+      it "should schedule events" do
+        u = AsyncObject.new
+        u.schedule(:do_something, 1, 2, 3)
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => 'do_something', 'arguments' => [1,2,3]})).to be_truthy
+      end
     end
-  end
   
-  describe "get_cached" do
-    it "should return nil on cache miss" do
-      expect(Permissable.permissions_redis).to receive(:get).with('asdf/PermitObject12345-1464760800.0:permissable_redis_cache_token').and_return(nil)
-      expect(PermitObject.new.get_cached('asdf')).to eq(nil)
-    end
+    describe "class scheduling" do
+      it "should not error on empty values" do
+        expect(AsyncObject.schedule(nil)).to eq(nil)
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => nil, 'arguments' => []})).to be_falsey
+      end
     
-    it "should return parsed json on cache hit" do
-      expect(Permissable.permissions_redis).to receive(:get).with('asdf/PermitObject12345-1464760800.0:permissable_redis_cache_token').and_return({a: 1, b: 2}.to_json)
-      expect(PermitObject.new.get_cached('asdf')).to eq({'a' => 1, 'b' => 2})
-    end 
+      it "should schedule events" do
+        AsyncObject.schedule(:do_something, 1, 2, 3)
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => 'do_something', 'arguments' => [1,2,3]})).to be_truthy
+      end
+    end
+  
+    describe "perform_action" do
+      it "should raise on invalid method" do
+        expect{ AsyncObject.perform_action({'method' => 'bad_method', 'arguments' => []}) }.to raise_error("method not found: AsyncObject:bad_method")
+      end
     
-    it "should return nil on malformed json cache hit" do
-      expect(Permissable.permissions_redis).to receive(:get).with('asdf/PermitObject12345-1464760800.0:permissable_redis_cache_token').and_return('this is not valid json')
-      expect(PermitObject.new.get_cached('asdf')).to eq(nil)
+      it "should call class methods" do
+        expect(AsyncObject).to receive(:hippo).with(1,2,3).and_return("ok")
+        expect(AsyncObject.perform_action({'method' => 'hippo', 'arguments' => [1,2,3]})).to eq("ok")
+      end
+    
+      it "should raise when the record isn't found" do
+        expect(@logger).to receive(:warn).with("expected record not found: AsyncObject:5")
+        AsyncObject.perform_action({'id' => 5, 'method' => 'id', 'arguments' => []})
+      end
+    
+      it "should call object methods" do
+        u = AsyncObject.new
+        expect_any_instance_of(AsyncObject).to receive(:hippo).with(1,2,3).and_return("ok")
+        expect(AsyncObject.perform_action({'id' => u.id, 'method' => 'hippo', 'arguments' => [1,2,3]})).to eq("ok")
+      end
     end
   end
   
-  describe "clear_cached" do
-    it "should call del on redis instance" do
-      expect(Permissable.permissions_redis).to receive(:del).with('something/PermitObject12345-1464760800.0:permissable_redis_cache_token')
-      expect(PermitObject.new.clear_cached('something')).to eq(nil)
+  describe "worker" do
+    it "should properly flush queues" do
+      Worker.schedule(AsyncObject, 'do_something', 2)
+      expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to eq(true)
+      Worker.flush_queues
+      expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to eq(false)
     end
-  end
   
-  describe "cache_permissions" do
-    it "should enable cached permissions" do
-      PermitObject.cache_permissions
-      expect(PermitObject.allow_cached_permissions).to eq(true)
+    describe "perform" do
+      it "should parse out Worker options and call the appropriate method" do
+        expect(AsyncObject).to receive(:bacon).with(12)
+        Worker.perform('AsyncObject', 'bacon', 12)
+      
+        expect(AsyncObject2).to receive(:halo).with(6, {a: 1})
+        Worker.perform('AsyncObject2', :halo, 6, {a: 1})
+      end
+    
+      it "should run scheduled events when told" do
+        Worker.schedule(AsyncObject, :bacon, 12)
+        Worker.schedule(AsyncObject2, :halo, 6, {a: 1})
+        expect(AsyncObject).to receive(:bacon).with(12)
+        expect(AsyncObject2).to receive(:halo).with(6, {'a' => 1})
+        Worker.process_queues
+      end
+    
+      it "should catch termination exceptions and re-queue" do
+        expect(AsyncObject).to receive(:bacon).with(12).and_raise(Resque::TermException.new('SIGTERM'))
+        Worker.schedule(AsyncObject, :bacon, 12)
+        Worker.process_queues
+        expect(Worker.scheduled?(AsyncObject, :bacon, 12)).to be_truthy
+      end
     end
-  end
   
-  describe "add_permissions" do
-    it "should add permissions to the correct object with the default scope" do
-      PermitObject.add_permissions('hat') { true }
-      expect(PermitObject.permissions_lookup).to_not eq(nil)
-      expect(PermitObject.permissions_lookup.length).to eq(1)
-      expect(PermitObject.permissions_lookup[0][0]).to eq(['hat'])
-      expect(PermitObject.permissions_lookup[0][2]).to eq(['full'])
-      expect(PermitObject2.permissions_lookup).to eq([])
+    describe "schedule" do
+      it "should add to the queue" do
+        Worker.schedule(AsyncObject, 'do_something', 2)
+        expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to be_truthy
+        expect(Worker.scheduled?(AsyncObject, :do_something, 1)).to be_falsey
+        Worker.schedule(AsyncObject, 'do_something', {a: 1, b: [2,3,4], c: {d: 7}})
+        expect(Worker.scheduled?(AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_truthy
+      end
+
+      it "should add to a difference queue" do
+        Worker.schedule_for('bacon', AsyncObject, 'do_something', 2)
+        expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to be_falsey
+        expect(Worker.scheduled?(AsyncObject, :do_something, 1)).to be_falsey
+        expect(Worker.scheduled_for?('bacon', AsyncObject, :do_something, 2)).to be_truthy
+        expect(Worker.scheduled_for?('bacon', AsyncObject, :do_something, 1)).to be_falsey
+        Worker.schedule_for('priority', AsyncObject, 'do_something', {a: 1, b: [2,3,4], c: {d: 7}})
+        expect(Worker.scheduled?(AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_falsey
+        expect(Worker.scheduled_for?('priority', AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_truthy
+      end
+    
+      it "should add to the queue from async-enabled models" do
+        AsyncObject.schedule(:hip_hop, 16)
+        u = AsyncObject.new
+        u.schedule(:hip_hop, 17)
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => 'hip_hop', 'arguments' => [16]})).to be_truthy
+        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => 'hip_hop', 'arguments' => [17]})).to be_truthy
+      end
+    end
+  
+    describe "perform_at" do
+      it "should not log on short jobs" do
+        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + 10)
+        expect(@logger).to_not receive(:error)
+        Worker.perform_at(:normal, 'AsyncObject', 'count')
+      end
+
+      it "should log on long-running jobs" do
+        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + 65)
+        expect(@logger).to receive(:error).with("long-running job, AsyncObject . count (), 65s")
+        Worker.perform_at(:normal, 'AsyncObject', 'count')
+      end
+    
+      it "should not log on semi-long jobs for the slow queue" do
+        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + (60*2))
+        expect(@logger).to_not receive(:error)
+        Worker.perform_at(:slow, 'AsyncObject', 'count')
+      end
+    
+      it "should log on really-long jobs for the slow queue" do
+        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + (60*11))
+        expect(@logger).to receive(:error).with("long-running job, AsyncObject . count () (expected slow), 660s")
+        Worker.perform_at(:slow, 'AsyncObject', 'count')
+      end
+    end
+  
+    describe "scheduled_actions" do
+      it "should have list actions" do
+        Worker.schedule(AsyncObject, :something)
+        expect(Worker.scheduled_actions.length).to eq(1)
+        expect(Worker.scheduled_actions[-1]).to eq({
+          'class' => 'Worker', 'args' => ['AsyncObject', 'something']
+        })
+        u = AsyncObject.new
+        u.schedule(:do_something, 'cool')
+        expect(Worker.scheduled_actions.length).to be >= 2
+        expect(Worker.scheduled_actions[-1]).to eq({
+          'class' => 'Worker', 'args' => ['AsyncObject', 'perform_action', {'id' => u.id, 'method' => 'do_something', 'scheduled' => Time.now.to_i, 'arguments' => ['cool']}]
+        })
+      end
     end
 
-    it "should add star permissions to the correct object" do
-      PermitObject.add_permissions('cat', ['*']) { true }
-      expect(PermitObject.permissions_lookup).to_not eq(nil)
-      expect(PermitObject.permissions_lookup.length).to eq(1)
-      expect(PermitObject.permissions_lookup[0][0]).to eq(['cat'])
-      expect(PermitObject.permissions_lookup[0][2]).to eq(['*', 'full'])
-      expect(PermitObject2.permissions_lookup).to eq([])
-    end
-  end
-  
-  describe "allows?" do
-    it "should return correct permissions" do
-      PermitObject.add_permissions('cat') { true }
-      PermitObject.add_permissions('frog') { false }
-      PermitObject.add_permissions('frog') { true }
-      obj = PermitObject.new
-      expect(obj.allows?(nil, 'frog')).to eq(true)
-      expect(obj.allows?(nil, 'cat')).to eq(true)
-      expect(obj.allows?(nil, 'something')).to eq(false)
-    end
-    
-    it "should short-circuit once a matching permission is met" do
-      PermitObject.add_permissions('cat') { true }
-      PermitObject.add_permissions('frog', 'horse') { true }
-      PermitObject.add_permissions('horse') { raise 'asdf' }
-      PermitObject.add_permissions('bacon') { raise 'jkl' }
-      obj = PermitObject.new
-      expect(obj.allows?(nil, 'frog')).to eq(true)
-      expect(obj.allows?(nil, 'cat')).to eq(true)
-      expect(obj.allows?(nil, 'horse')).to eq(true)
-      expect{obj.allows?(nil, 'bacon')}.to raise_error('jkl')
-    end
-    
-    it "should not call checks requiring a user if no user is provided" do
-      PermitObject.add_permissions('cat') {|u| raise "no" }
-      PermitObject.add_permissions('frog', 'horse') { true }
-      PermitObject.add_permissions('horse') { raise 'asdf' }
-      obj = PermitObject.new
-      expect(obj.allows?(nil, 'frog')).to eq(true)
-      expect(obj.allows?(nil, 'cat')).to eq(false)
-      expect(obj.allows?(nil, 'horse')).to eq(true)
+    describe "stop_stuck_workers" do
+      it "should have unregister only stuck workers" do
+        worker1 = OpenStruct.new({
+          :processing => {
+            'run_at' => 6.weeks.ago
+          }
+        })
+        worker2 = OpenStruct.new({
+          :processing => {
+            'run_at' => 1.seconds.ago
+          }
+        })
+        worker3 = OpenStruct.new({
+          :processing => {
+          }
+        })
+        expect(Resque).to receive(:workers).and_return([worker1, worker2, worker3])
+        expect(worker1).to receive(:unregister_worker)
+        expect(worker2).to_not receive(:unregister_worker)
+        expect(worker3).to_not receive(:unregister_worker)
+        Worker.stop_stuck_workers
+      end
     end
 
-    it "should correctly check user permissions" do
-      PermitObject.add_permissions('cat') {|u| u[:a] == 1 }
-      obj = PermitObject.new
-      expect(obj.allows?({a: 1}, 'cat')).to eq(true)
-      expect(obj.allows?({a: 2}, 'cat')).to eq(false)
+    describe "prune_dead_workers" do
+      it "should prune dead workers" do
+        worker1 = OpenStruct.new
+        worker2 = OpenStruct.new
+        worker3 = OpenStruct.new
+        expect(Resque).to receive(:workers).and_return([worker1, worker2])
+        expect(worker1).to receive(:prune_dead_workers)
+        expect(worker2).to receive(:prune_dead_workers)
+        expect(worker3).to_not receive(:prune_dead_workers)
+        Worker.prune_dead_workers
+      end
     end
-    
-    it "should flag as scope-rejected if true" do
-      PermitObject.add_permissions('frog', 'horse') { true }
-      obj = PermitObject.new
-      action = 'frog'
-      res = obj.allows?(nil, action, [])
-      expect(res).to eq(false)
-      expect(action.instance_variable_get('@scope_rejected')).to eq(true)
+
+    describe "kill_all_workers" do
+      it "should kill all workers" do
+        worker1 = OpenStruct.new
+        worker2 = OpenStruct.new
+        worker3 = OpenStruct.new
+        expect(Resque).to receive(:workers).and_return([worker1, worker2])
+        expect(worker1).to receive(:unregister_worker)
+        expect(worker2).to receive(:unregister_worker)
+        expect(worker3).to_not receive(:unregister_worker)
+        Worker.kill_all_workers
+      end
     end
-    
-    it "should call permissions_for if allowing cached permissions" do
-      PermitObject.cache_permissions
-      obj = PermitObject.new
-      user = {}
-      expect(obj).to receive(:permissions_for).with(user, ['a', '*']).and_return({
-        'hat' => true,
-        'cat' => false
-      }).exactly(2).times
-      action = 'cat'
-      expect(obj.allows?(user, action, ['a'])).to eq(false)
-      expect(action.instance_variable_get('@scope_rejected')).to eq(true)
-      action = 'hat'
-      expect(obj.allows?(user, action, ['a'])).to eq(true)
-      expect(action.instance_variable_get('@scope_rejected')).to eq(false)
-    end
-  end
-  
-  describe "permissions_for" do
-    it "should return a list of permissions" do
-      PermitObject.add_permissions('jump') { true }
-      PermitObject.add_permissions('swing') { false }
-      PermitObject.add_permissions('fly') { true }
-      obj = PermitObject.new
-      expect(obj.permissions_for(nil)).to eq({
-        'user_id' => nil,
-        'jump' => true,
-        'fly' => true
-      })
-    end
-    
-    it "should not call checks whose permissions have all already been granted" do
-      PermitObject.add_permissions('jump') { true }
-      PermitObject.add_permissions('swing') { true }
-      PermitObject.add_permissions('fly', 'jump') { true }
-      PermitObject.add_permissions('swing', 'jump') { raise 'asdf' }
-      obj = PermitObject.new
-      expect(obj.permissions_for(nil)).to eq({
-        'user_id' => nil,
-        'jump' => true,
-        'fly' => true,
-        'swing' => true
-      })
-    end
-    
-    it "should not call checks that require a user if no user is set" do
-      PermitObject.add_permissions('jump') { true }
-      PermitObject.add_permissions('fly', 'jump') { true }
-      PermitObject.add_permissions('swing', 'jump') {|u| raise 'asdf' }
-      obj = PermitObject.new
-      expect(obj.permissions_for(nil)).to eq({
-        'user_id' => nil,
-        'jump' => true,
-        'fly' => true
-      })
-    end
-    
-    it "should set scope-rejected permissions to false, not leave as nil" do
-      PermitObject.add_permissions('jump', ['*']) { true }
-      PermitObject.add_permissions('fly', 'jump') { true }
-      obj = PermitObject.new
-      expect(obj.permissions_for(nil, [])).to eq({
-        'user_id' => nil,
-        'jump' => true,
-        'fly' => false
-      })
-    end
-    
-    it "should persist a cache of the permissions if enabled" do
-      PermitObject.cache_permissions
-      PermitObject.add_permissions('jump', ['*']) { true }
-      PermitObject.add_permissions('fly', 'jump') { true }
-      obj = PermitObject.new
-      expect(obj).to receive(:set_cached).with("permissions-for/nobody/scopes_*", {"user_id"=>nil, "jump"=>true, "fly"=>false})
-      expect(obj.permissions_for(nil, [])).to eq({
-        'user_id' => nil,
-        'jump' => true,
-        'fly' => false
-      })
-    end
-    
-    it "should retrieve permissions from the cache if enabled" do
-      PermitObject.cache_permissions
-      obj = PermitObject.new
-      user = OpenStruct.new(cache_key: 'asdf', global_id: 'asdf')
-      expect(obj).to receive(:get_cached).with('permissions-for/nobody/scopes_a,*').and_return({a: 1})
-      expect(obj).to receive(:get_cached).with('permissions-for/asdf/scopes_full,*').and_return({b: 1})
-      expect(obj.permissions_for(nil, ['a'])).to eq({a: 1})
-      expect(obj.permissions_for(user)).to eq({b: 1})
-    end
-  end
+  end  
 end
