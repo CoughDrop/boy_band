@@ -234,15 +234,19 @@ module BoyBand
       hash = saves.group_by{|j| j['args'][2]['id'] }; hash.length
       hash.each do |id, jobs|
         list = []
-        jobs.each{|j| list += j['args'][2]['arguments'][0] }
+        max_stamp = 48.hours.ago.to_i
+        jobs.each do |j| 
+          list += j['args'][2]['arguments'][0] 
+          max_stamp = [max_stamp, j['args'][2]['arguments'][2] || 0].max
+        end
         args = jobs[0]['args'][2]
-        args['arguments'] = [list.uniq]
+        args['arguments'] = [list.uniq, nil, max_stamp]
         Resque.enqueue(SlowWorker, job['args'][0], job['args'][1], args)
       end; hash.keys.length
       Resque.size(queue)
     end
   end
-  
+    
   module AsyncInstanceMethods
     def schedule(method, *args)
       return nil unless method
