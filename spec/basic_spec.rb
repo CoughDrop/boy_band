@@ -57,6 +57,7 @@ describe BoyBand do
   
   before(:each) do
     Worker.flush_queues
+    Worker.set_domain_id(nil)
     Resque.redis = Redis.new
     @logger = FakeLogger.new
     allow(Rails).to receive(:logger).and_return(@logger)
@@ -172,6 +173,17 @@ describe BoyBand do
         expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => 'hip_hop', 'arguments' => [16]})).to be_truthy
         expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => 'hip_hop', 'arguments' => [17]})).to be_truthy
       end
+
+      it "should attach the domain_id" do
+        AsyncObject.schedule(:hip_hop, 16)
+        expect(Worker.scheduled_actions[0]['domain_id']).to eq('default')
+      end
+
+      it "should use the updated domain_id" do
+        Worker.set_domain_id('bacon.com')
+        AsyncObject.schedule(:hip_hop, 16)
+        expect(Worker.scheduled_actions[0]['domain_id']).to eq('bacon.com')
+      end
     end
   
     describe "perform_at" do
@@ -205,13 +217,13 @@ describe BoyBand do
         Worker.schedule(AsyncObject, :something)
         expect(Worker.scheduled_actions.length).to eq(1)
         expect(Worker.scheduled_actions[-1]).to eq({
-          'class' => 'Worker', 'args' => ['AsyncObject', 'something']
+          'class' => 'Worker', 'args' => ['AsyncObject', 'something'], 'domain_id' => 'default'
         })
         u = AsyncObject.new
         u.schedule(:do_something, 'cool')
         expect(Worker.scheduled_actions.length).to be >= 2
         expect(Worker.scheduled_actions[-1]).to eq({
-          'class' => 'Worker', 'args' => ['AsyncObject', 'perform_action', {'id' => u.id, 'method' => 'do_something', 'scheduled' => Time.now.to_i, 'arguments' => ['cool']}]
+          'class' => 'Worker', 'args' => ['AsyncObject', 'perform_action', {'id' => u.id, 'method' => 'do_something', 'scheduled' => Time.now.to_i, 'arguments' => ['cool']}], 'domain_id' => 'default'
         })
       end
     end

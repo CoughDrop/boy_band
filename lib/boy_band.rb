@@ -21,12 +21,22 @@ module BoyBand
     def thread_id
       "#{Process.pid}_#{Thread.current.object_id}"
     end
+
+    def domain_id
+      @@domain_id ||= "default"
+      @@domain_id
+    end
+
+    def set_domain_id(val)
+      @@domain_id = val
+    end
   
     def schedule_for(queue, klass, method_name, *args)
       @queue = queue.to_s
       job_hash = Digest::MD5.hexdigest(args.to_json)
       note_job(job_hash)
       size = Resque.size(queue)
+      args.push("domain::#{self.domain_id}")
       if queue == :slow
         Resque.enqueue(SlowWorker, klass.to_s, method_name, *args)
         if size > 1000 && !Resque.redis.get("queue_warning_#{queue}")
@@ -78,6 +88,9 @@ module BoyBand
   
     def perform_at(speed, *args)
       args_copy = [] + args
+      if args[-1].is_a?(String) && args[-1].match(/^domain::/)
+        set_domain_id(args_copy.pop.split(/::/, 2)[1])
+      end
       klass_string = args_copy.shift
       klass = Object.const_get(klass_string)
       method_name = args_copy.shift
@@ -122,17 +135,27 @@ module BoyBand
       queues.each do |queue|
         idx = Resque.size(queue)
         idx.times do |i|
-          res << Resque.peek(queue, i)
+          item = Resque.peek(queue, i)
+          if item['args'] && item['args'][-1].match(/^domain::/)
+            domain = item['args'].pop
+            item['domain_id'] = domain.split(/::/, 2)[1]
+          end
+          res << item
         end
       end
       res
     end
   
     def scheduled_for?(queue, klass, method_name, *args)
+      args_copy = [] + args
+      if args[-1].is_a?(String) && args[-1].match(/^domain::/)
+        set_domain_id(args_copy.pop.split(/::/, 2)[1])
+      end
+
       idx = Resque.size(queue)
       queue_class = (queue == :slow ? 'SlowWorker' : 'Worker')
       if false
-        job_hash = args.to_json
+        job_hash = args_copy.to_json
         timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', job_hash) || "[]")
         cutoff = 6.hours.ago.to_i
         return timestamps.select{|ts| ts > cutoff }.length > 0
@@ -143,15 +166,18 @@ module BoyBand
           start += items.length > 0 ? items.length : 1
           items.each do |schedule|
             if schedule && schedule['class'] == queue_class && schedule['args'][0] == klass.to_s && schedule['args'][1] == method_name.to_s
-              a1 = args
+              a1 = args_copy
               if a1.length == 1 && a1[0].is_a?(Hash)
                 a1 = [a1[0].dup]
                 a1[0].delete('scheduled')
+                a1[0].delete('domain_id')
               end
               a2 = schedule['args'][2..-1]
+              a2.pop if a2.length == 2 && a2[1].is_a?(String) && a2[1].match(/^domain::/)
               if a2.length == 1 && a2[0].is_a?(Hash)
                 a2 = [a2[0].dup]
                 a2[0].delete('scheduled')
+                a2[0].delete('domain_id')
               end
               if a1.to_json == a2.to_json
                 return true
