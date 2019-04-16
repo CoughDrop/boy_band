@@ -173,7 +173,7 @@ module BoyBand
                 a1[0].delete('domain_id')
               end
               a2 = schedule['args'][2..-1]
-              a2.pop if a2.length == 2 && a2[1].is_a?(String) && a2[1].match(/^domain::/)
+              a2.pop if a2.length > 1 && a2[-1].is_a?(String) && a2[-1].match(/^domain::/)
               if a2.length == 1 && a2[0].is_a?(Hash)
                 a2 = [a2[0].dup]
                 a2[0].delete('scheduled')
