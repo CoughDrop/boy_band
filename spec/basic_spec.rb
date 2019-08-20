@@ -15,6 +15,10 @@ describe BoyBand do
   end
   module Worker
     extend BoyBand::WorkerMethods
+
+    def self.find_record(klass, id)
+      klass.find_by(id: id)
+    end
   end
   
   class AsyncObject

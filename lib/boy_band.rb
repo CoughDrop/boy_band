@@ -340,8 +340,7 @@ module BoyBand
     def perform_action(settings)
       obj = self
       if settings['id']
-        obj = obj.find_by(:id => settings['id'].to_s)
-        obj.reload if obj
+        obj = Worker.find_record(obj, settings['id'].to_s)
       end
       if !obj
         # record not found so there's nothing to do on it
