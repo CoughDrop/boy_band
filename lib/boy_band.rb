@@ -16,7 +16,7 @@ module BoyBand
       PaperTrail.whodunnit = name
     end
   end
-  
+
   module WorkerMethods
     def thread_id
       "#{Process.pid}_#{Thread.current.object_id}"
@@ -31,12 +31,34 @@ module BoyBand
       @@domain_id = val
     end
   
+    def job_chain
+      @@job_chain ||= "none"
+      @@job_chain
+    end
+
+    def set_job_chain(val)
+      @@job_chain = val
+    end
+  
     def schedule_for(queue, klass, method_name, *args)
       @queue = queue.to_s
       job_hash = Digest::MD5.hexdigest(args.to_json)
       note_job(job_hash)
       size = Resque.size(queue)
       args.push("domain::#{self.domain_id}")
+      chain = self.job_chain.split(/##/)
+      job_id = "j#{Time.now.iso8601}_#{rand(9999)}"
+      chain = [job_id] if chain == ["none"]
+      if chain.length > 1
+        Resque.redis.incr("jobs_from_#{chain[0]}") 
+        Resque.redis.expire("jobs_from_#{chain[0]}", 24.hours.to_i)
+      end
+      chain.push("#{klass.to_s},#{method_name.to_s},#{args.join('+')}")
+      Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 1
+      if chain.length > 5
+        Rails.logger.error("jobchain too long: job_id, #{chain.length} entries")
+      end
+      args.push("chain::#{chain.join('##')}")
       if queue == :slow
         Resque.enqueue(SlowWorker, klass.to_s, method_name, *args)
         if size > 1000 && !Resque.redis.get("queue_warning_#{queue}")
@@ -88,7 +110,10 @@ module BoyBand
   
     def perform_at(speed, *args)
       args_copy = [] + args
-      if args[-1].is_a?(String) && args[-1].match(/^domain::/)
+      if args_copy[-1].is_a?(String) && args_copy[-1].match(/^chain::/)
+        set_job_chain(args_copy.pop.split(/::/, 2)[1])
+      end
+      if args_copy[-1].is_a?(String) && args_copy[-1].match(/^domain::/)
         set_domain_id(args_copy.pop.split(/::/, 2)[1])
       end
       klass_string = args_copy.shift
@@ -112,6 +137,7 @@ module BoyBand
       elsif diff > 60*10 && speed == :slow
         Rails.logger.error("long-running job, #{action} (expected slow), #{diff}s")
       end
+      set_job_chain("none")
       BoyBand.set_job_instigator(pre_whodunnit)
       clear_job(job_hash)
     rescue Resque::TermException
@@ -136,6 +162,9 @@ module BoyBand
         idx = Resque.size(queue)
         idx.times do |i|
           item = Resque.peek(queue, i)
+          if item['args'] && item['args'][-1].match(/^chain::/)
+            chain = item['args'].pop
+          end
           if item['args'] && item['args'][-1].match(/^domain::/)
             domain = item['args'].pop
             item['domain_id'] = domain.split(/::/, 2)[1]
@@ -148,6 +177,9 @@ module BoyBand
   
     def scheduled_for?(queue, klass, method_name, *args)
       args_copy = [] + args
+      if args[-1].is_a?(String) && args[-1].match(/^chain::/)
+        args_copy.pop.split(/::/, 2)[1]
+      end
       if args[-1].is_a?(String) && args[-1].match(/^domain::/)
         set_domain_id(args_copy.pop.split(/::/, 2)[1])
       end
@@ -173,6 +205,7 @@ module BoyBand
                 a1[0].delete('domain_id')
               end
               a2 = schedule['args'][2..-1]
+              a2.pop if a2.length > 1 && a2[-1].is_a?(String) && a2[-1].match(/^chain::/)
               a2.pop if a2.length > 1 && a2[-1].is_a?(String) && a2[-1].match(/^domain::/)
               if a2.length == 1 && a2[0].is_a?(Hash)
                 a2 = [a2[0].dup]
