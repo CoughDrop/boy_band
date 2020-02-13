@@ -54,9 +54,13 @@ module BoyBand
         Resque.redis.expire("jobs_from_#{chain[0]}", 24.hours.to_i)
       end
       chain.push("#{klass.to_s},#{method_name.to_s},#{args.join('+')}")
-      Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 1
+      Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 2
       if chain.length > 5
-        Rails.logger.error("jobchain too long: job_id, #{chain.length} entries")
+        Rails.logger.error("jobchain too long: #{chain[0]}, #{chain.length} entries")
+      end
+      job_count = Resque.redis.get("jobs_from_#{chain[0]}")
+      if job_count && job_count.to_i > 50
+        Rails.logger.error("jobchain too many sub-jobs: #{chain[0]}, #{job_count} so far")
       end
       args.push("chain::#{chain.join('##')}")
       if queue == :slow
