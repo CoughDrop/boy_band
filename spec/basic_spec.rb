@@ -188,6 +188,68 @@ describe BoyBand do
         AsyncObject.schedule(:hip_hop, 16)
         expect(Worker.scheduled_actions[0]['domain_id']).to eq('bacon.com')
       end
+
+      it "should allow classes to schedule_once" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        AsyncObject.schedule_once(:hip_hop, 17)
+        AsyncObject.schedule_once(:hip_hop, 17)
+        AsyncObject.schedule_once(:hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(1)
+      end
+
+      it "should allow classes to schedule_for" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(0)
+        AsyncObject.schedule_for('bacon', :hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(1)
+      end
+
+      it "should allow classes to schedule_once_for" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(0)
+        AsyncObject.schedule_once_for('bacon', :hip_hop, 17)
+        AsyncObject.schedule_once_for('bacon', :hip_hop, 17)
+        AsyncObject.schedule_once_for('bacon', :hip_hop, 17)
+        AsyncObject.schedule_once_for('bacon', :hip_hop, 17)
+        AsyncObject.schedule_once_for('bacon', :hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(1)
+      end
+
+      it "should allow instances to schedule_once" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        u = AsyncObject.new
+        u.schedule_once(:hip_hop, 17)
+        u.schedule_once(:hip_hop, 17)
+        u.schedule_once(:hip_hop, 17)
+        u.schedule_once(:hip_hop, 17)
+        u.schedule_once(:hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(1)
+      end
+
+      it "should allow instances to schedule_for" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(0)
+        u = AsyncObject.new
+        u.schedule_for('bacon', :hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(1)
+      end
+
+      it "should allow instances to schedule_once_for" do
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(0)
+        u = AsyncObject.new
+        u.schedule_once_for('bacon', :hip_hop, 17)
+        u.schedule_once_for('bacon', :hip_hop, 17)
+        u.schedule_once_for('bacon', :hip_hop, 17)
+        u.schedule_once_for('bacon', :hip_hop, 17)
+        u.schedule_once_for('bacon', :hip_hop, 17)
+        expect(Worker.scheduled_actions.length).to eq(0)
+        expect(Worker.scheduled_actions('bacon').length).to eq(1)
+      end
+
     end
   
     describe "perform_at" do
