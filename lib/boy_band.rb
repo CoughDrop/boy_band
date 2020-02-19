@@ -41,6 +41,7 @@ module BoyBand
     end
   
     def schedule_for(queue, klass, method_name, *args)
+      queue = queue.to_sym
       @queue = queue.to_s
       job_hash = Digest::MD5.hexdigest(args.to_json)
       note_job(job_hash)
@@ -438,7 +439,7 @@ module BoyBand
         'scheduled' => self.scheduled_stamp,
         'arguments' => args
       }
-      Worker.schedule(self, :perform_action, settings)
+      schedule_for('default', method, *args)
     end
   
     def schedule_for(queue, method, *args)
