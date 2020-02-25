@@ -39,13 +39,22 @@ module BoyBand
     def set_job_chain(val)
       @@job_chain = val
     end
+
+    def queue_size(queue)
+      size = Resque.redis.get("sizeof/#{queue}").to_i
+      if !size || size == 0
+        size = Resque.size(queue)
+        Resque.redis.setex("sizeof/#{queue}", 30.seconds.to_i, size)
+      end
+      size
+    end
   
     def schedule_for(queue, klass, method_name, *args)
       queue = queue.to_sym
       @queue = queue.to_s
       job_hash = Digest::MD5.hexdigest(args.to_json)
       note_job(job_hash)
-      size = Resque.size(queue)
+      size = queue_size(queue)
       args.push("domain::#{self.domain_id}")
       chain = self.job_chain.split(/##/)
       job_id = "j#{Time.now.iso8601}_#{rand(9999)}"
@@ -80,21 +89,21 @@ module BoyBand
     end
   
     def note_job(hash)
-      if Resque.redis
-        timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', hash) || "[]")
-        cutoff = 6.hours.ago.to_i
-        timestamps = timestamps.select{|ts| ts > cutoff }
-        timestamps.push(Time.now.to_i)
-  #      Resque.redis.hset('hashed_jobs', hash, timestamps.to_json)
-      end
+  #     if Resque.redis
+  #       timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', hash) || "[]")
+  #       cutoff = 6.hours.ago.to_i
+  #       timestamps = timestamps.select{|ts| ts > cutoff }
+  #       timestamps.push(Time.now.to_i)
+  # #      Resque.redis.hset('hashed_jobs', hash, timestamps.to_json)
+  #     end
     end
   
     def clear_job(hash)
-      if Resque.redis
-        timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', hash) || "[]")
-        timestamps.shift
-  #      Resque.redis.hset('hashed_jobs', hash, timestamps.to_json)
-      end
+  #     if Resque.redis
+  #       timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', hash) || "[]")
+  #       timestamps.shift
+  # #      Resque.redis.hset('hashed_jobs', hash, timestamps.to_json)
+  #     end
     end
   
     def schedule(klass, method_name, *args)
@@ -251,6 +260,8 @@ module BoyBand
         set_domain_id(args_copy.pop.split(/::/, 2)[1])
       end
 
+      idx = queue_size(queue)
+      return false if idx > 500 # big queues mustn't be searched this way
       idx = Resque.size(queue)
       queue_class = (queue == :slow ? 'SlowWorker' : 'Worker')
       if false
