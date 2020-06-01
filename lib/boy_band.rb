@@ -63,7 +63,12 @@ module BoyBand
         Resque.redis.incr("jobs_from_#{chain[0]}") 
         Resque.redis.expire("jobs_from_#{chain[0]}", 24.hours.to_i)
       end
-      chain.push("#{klass.to_s},#{method_name.to_s},#{args.join('+')}")
+      Resque.redis.setex("scheduled/#{klass.to_s}/#{job_hash}", 6.hours, "t")
+      chain_args = args[0..-2]
+      if chain_args.length == 1 && chain_args[0].is_a?(Hash)
+        chain_args = [chain_args[0]['method'],chain_args[0]['id'],chain_args[0]['arguments'].to_s[0, 20]]
+      end
+      chain.push("#{klass.to_s},#{method_name.to_s},#{chain_args.join('+')}")
       Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 2
       if chain.length > 5
         Rails.logger.error("jobchain too deep: #{chain[0]}, #{chain.length} entries")
@@ -134,6 +139,7 @@ module BoyBand
       klass = Object.const_get(klass_string)
       method_name = args_copy.shift
       job_hash = Digest::MD5.hexdigest(args_copy.to_json)
+      Resque.redis.del("scheduled/#{klass_string}/#{method_name}/#{job_hash}")
       hash = args_copy[0] if args_copy[0].is_a?(Hash)
       hash ||= {'method' => method_name}
       action = "#{klass_string} . #{hash['method']} (#{hash['id']})"
@@ -261,6 +267,8 @@ module BoyBand
       end
 
       idx = queue_size(queue)
+      job_hash = args_copy.to_json
+      return true if Resque.redis.get("scheduled/#{klass.to_s}/#{method_name}/#{job_hash}") == "t"
       return false if idx > 500 # big queues mustn't be searched this way
       idx = Resque.size(queue)
       queue_class = (queue == :slow ? 'SlowWorker' : 'Worker')
@@ -402,18 +410,7 @@ module BoyBand
     end
 
     def schedule_once(method, *args)
-      return nil unless method && id
-      already_scheduled = Worker.scheduled?(self.class, :perform_action, {
-        'id' => id,
-        'method' => method,
-        'scheduled' => self.class.scheduled_stamp,
-        'arguments' => args
-      })
-      if !already_scheduled
-        schedule(method, *args)
-      else
-        false
-      end
+      schedule_once_for('default', method, *args)
     end
 
     def schedule_once_for(queue, method, *args)
@@ -464,17 +461,7 @@ module BoyBand
     end
 
     def schedule_once(method, *args)
-      return nil unless method
-      already_scheduled = Worker.scheduled?(self, :perform_action, {
-        'method' => method,
-        'scheduled' => self.scheduled_stamp,
-        'arguments' => args
-      })
-      if !already_scheduled
-        schedule(method, *args)
-      else
-        false
-      end
+      schedule_once_for('default', method, *args)
     end
 
     def schedule_once_for(queue, method, *args)
