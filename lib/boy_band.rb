@@ -126,8 +126,13 @@ module BoyBand
     def in_worker_process?
       BoyBand.job_instigator.match(/^job/)
     end
+
+    def current_speed
+      @speed
+    end
   
     def perform_at(speed, *args)
+      @speed = speed
       args_copy = [] + args
       if args_copy[-1].is_a?(String) && args_copy[-1].match(/^chain::/)
         set_job_chain(args_copy.pop.split(/::/, 2)[1])
@@ -160,6 +165,7 @@ module BoyBand
       set_job_chain("none")
       BoyBand.set_job_instigator(pre_whodunnit)
       clear_job(job_hash)
+      @speed = nil
     rescue Resque::TermException
       Resque.enqueue(self, *args)
     end
