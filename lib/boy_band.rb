@@ -69,13 +69,13 @@ module BoyBand
         chain_args = [chain_args[0]['method'],chain_args[0]['id'],chain_args[0]['arguments'].to_s[0, 20]]
       end
       chain.push("#{klass.to_s},#{method_name.to_s},#{chain_args.join('+')}")
-      Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 2
+      # Rails.logger.warn("jobchain set, #{chain[0]} #{chain.join('##')}") if chain.length > 2
       if chain.length > 5
-        Rails.logger.error("jobchain too deep: #{chain[0]}, #{chain.length} entries")
+        Rails.logger.error("jobchain too deep: #{chain[1]}, #{chain.length} entries")
       end
       job_count = Resque.redis.get("jobs_from_#{chain[0]}")
       if job_count && job_count.to_i > 50
-        Rails.logger.error("jobchain too many sub-jobs: #{chain[0]}, #{job_count} so far")
+        Rails.logger.error("jobchain too many sub-jobs: #{chain[1]}, #{job_count} so far")
       end
       args.push("chain::#{chain.join('##')}")
       if queue == :slow
@@ -188,14 +188,14 @@ module BoyBand
         idx = Resque.size(queue)
         idx.times do |i|
           item = Resque.peek(queue, i)
-          if item['args'] && item['args'][-1].match(/^chain::/)
+          if item && item['args'] && item['args'][-1].match(/^chain::/)
             chain = item['args'].pop
           end
-          if item['args'] && item['args'][-1].match(/^domain::/)
+          if item && item['args'] && item['args'][-1].match(/^domain::/)
             domain = item['args'].pop
             item['domain_id'] = domain.split(/::/, 2)[1]
           end
-          res << item
+          res << item if item
         end
       end
       res
@@ -255,7 +255,7 @@ module BoyBand
       list = []
       idx.times do |i|
         item = Resque.peek(queue, i)
-        if item['args'] && item['args'][2].is_a?(Hash) && item['args'][2]['method'] == method
+        if item && item['args'] && item['args'][2].is_a?(Hash) && item['args'][2]['method'] == method
           list << item
           puts item.to_json
         end
@@ -277,7 +277,7 @@ module BoyBand
       return true if Resque.redis.get("scheduled/#{klass.to_s}/#{method_name}/#{job_hash}") == "t"
       return false if idx > 500 # big queues mustn't be searched this way
       idx = Resque.size(queue)
-      queue_class = (queue == :slow ? 'SlowWorker' : 'Worker')
+      queue_class = (queue.to_s == 'slow' ? 'SlowWorker' : 'Worker')
       if false
         job_hash = args_copy.to_json
         timestamps = JSON.parse(Resque.redis.hget('hashed_jobs', job_hash) || "[]")
