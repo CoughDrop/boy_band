@@ -77,7 +77,7 @@ module BoyBand
       if job_count && job_count.to_i > 50
         Rails.logger.error("jobchain too many sub-jobs: #{chain[1]}, #{job_count} so far")
       end
-      args.push("chain::#{chain.join('##')}")
+      args.push("chain::#{chain[0, 50].join('##')}")
       if queue == :slow
         Resque.enqueue(SlowWorker, klass.to_s, method_name, *args)
         if size > 1000 && !Resque.redis.get("queue_warning_#{queue}")

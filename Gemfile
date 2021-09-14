@@ -9,4 +9,4 @@ group :test do
   gem 'fakeredis'
 end
 
-ruby "2.3.3"
+ruby "2.6.6"
