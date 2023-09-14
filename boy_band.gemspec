@@ -5,8 +5,8 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'rspec'
   s.add_development_dependency 'ruby-debug'
 
-  s.version     = '0.1.13'
-  s.date        = '2020-12-08'
+  s.version     = '0.1.15'
+  s.date        = '2023-09-14'
   s.summary     = "BoyBand"
   s.extra_rdoc_files = %W(LICENSE)
   s.homepage = %q{http://github.com/CoughDrop/boy_band}

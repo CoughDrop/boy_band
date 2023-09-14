@@ -60,8 +60,8 @@ module BoyBand
       job_id = "j#{Time.now.iso8601}_#{rand(9999)}"
       chain = [job_id] if chain == ["none"]
       if chain.length > 1
-        Resque.redis.incr("jobs_from_#{chain[0]}") 
-        Resque.redis.expire("jobs_from_#{chain[0]}", 24.hours.to_i)
+        Resque.redis.incr("jobs_from/#{chain[0]}") 
+        Resque.redis.expire("jobs_from/#{chain[0]}", 24.hours.to_i)
       end
       Resque.redis.setex("scheduled/#{klass.to_s}/#{job_hash}", 6.hours, "t")
       chain_args = args[0..-2]
@@ -73,11 +73,11 @@ module BoyBand
       if chain.length > 5
         Rails.logger.error("jobchain too deep: #{chain[1]}, #{chain.length} entries")
       end
-      job_count = Resque.redis.get("jobs_from_#{chain[0]}")
+      job_count = Resque.redis.get("jobs_from/#{chain[0]}")
       if job_count && job_count.to_i > 50
         Rails.logger.error("jobchain too many sub-jobs: #{chain[1]}, #{job_count} so far")
       end
-      args.push("chain::#{chain.join('##')}")
+      args.push("chain::#{chain[0, 50].join('##')}")
       if queue == :slow
         Resque.enqueue(SlowWorker, klass.to_s, method_name, *args)
         if size > 1000 && !Resque.redis.get("queue_warning_#{queue}")
